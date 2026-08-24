@@ -1,0 +1,10 @@
+# Secrets and generated credentials -- never commit these
+.env
+device.key
+device.crt
+device_fingerprint.txt
+include/device_creds.h
+
+# PlatformIO build output
+.pio
+.vscode/.browse.c_cpp.db*
