@@ -49,6 +49,8 @@ def main():
     wifi_ssid = require(env, "WIFI_SSID")
     wifi_password = require(env, "WIFI_PASSWORD")
     auth_token = require(env, "AUTH_TOKEN")
+    softap_ssid = require(env, "SOFTAP_SSID")
+    softap_password = require(env, "SOFTAP_PASSWORD")
 
     key_pem = key_path.read_text()
     cert_pem = cert_path.read_text()
@@ -68,6 +70,8 @@ static const char DEVICE_CERT_PEM[] = R"EOF(
 static const char WIFI_SSID[]     = "{c_string(wifi_ssid)}";
 static const char WIFI_PASSWORD[] = "{c_string(wifi_password)}";
 static const char AUTH_TOKEN[]    = "{c_string(auth_token)}";
+static const char SOFTAP_SSID[]     = "{c_string(softap_ssid)}";
+static const char SOFTAP_PASSWORD[] = "{c_string(softap_password)}";
 """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(header)
@@ -76,3 +80,4 @@ static const char AUTH_TOKEN[]    = "{c_string(auth_token)}";
 
 if __name__ == "__main__":
     main()
+

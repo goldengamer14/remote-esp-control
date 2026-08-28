@@ -11,5 +11,6 @@ openssl req -new -x509 -key device.key -out device.crt -days 3650 \
 python3 tools/make_header.py device.key device.crt include/device_creds.h
 
 echo
-echo "Pin this fingerprint in client/control_client.py:"
-openssl x509 -in device.crt -noout -fingerprint -sha256
+echo "Fingerprint (also saved to device_fingerprint.txt):"
+openssl x509 -in device.crt -noout -fingerprint -sha256 | tee device_fingerprint.txt
+
