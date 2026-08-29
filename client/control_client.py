@@ -14,6 +14,7 @@ import socket
 import ssl
 import hashlib
 import sys
+import time
 from pathlib import Path
 
 PORT = 8443
@@ -46,7 +47,6 @@ def load_fingerprint() -> str:
     if not fp_file.exists():
         print(f"{fp_file} not found -- run tools/gen_creds.sh first.")
         sys.exit(1)
-    # openssl's output line looks like: SHA256 Fingerprint=AA:BB:CC:...
     line = fp_file.read_text().strip()
     _, _, fp = line.partition("=")
     if not fp:
@@ -77,12 +77,23 @@ def recv_line(sock, buffer: bytearray) -> str:
     return line.decode(errors="replace").strip()
 
 
-def main():
-    env = load_env(PROJECT_ROOT / ".env")
-    host = require(env, "ESP_HOST")
-    auth_token = require(env, "AUTH_TOKEN")
-    expected_fingerprint = load_fingerprint()
+def read_response(tls, buf: bytearray) -> str:
+    """
+    A command can produce one or more lines: zero or more progress lines
+    prefixed '# ' (printed as they arrive), followed by exactly one real
+    result line, which is returned. This is what keeps multi-line replies
+    (RELOAD, RESTART) from desyncing the one-command-one-response loop.
+    """
+    while True:
+        line = recv_line(tls, buf)
+        if line.startswith("# "):
+            print(line)
+            continue
+        return line
 
+
+def connect_and_verify(host: str, auth_token: str, expected_fingerprint: str):
+    """One full connect + TLS handshake + fingerprint check + auth cycle."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # manual pinning below replaces CA trust
@@ -92,23 +103,66 @@ def main():
 
     der_cert = tls.getpeercert(binary_form=True)
     if not fingerprint_matches(der_cert, expected_fingerprint):
-        print("!! Certificate fingerprint mismatch -- refusing to continue.")
         tls.close()
-        sys.exit(1)
+        raise RuntimeError("Certificate fingerprint mismatch -- refusing to continue")
 
-    print("Device identity verified.")
-
+    tls.settimeout(20)  # RELOAD/RESTART can take up to 15s server-side
     buf = bytearray()
 
     tls.sendall((auth_token + "\n").encode())
-    print(recv_line(tls, buf))
+    auth_resp = recv_line(tls, buf)
+    if auth_resp != "AUTH_OK":
+        tls.close()
+        raise RuntimeError(f"Auth failed: {auth_resp}")
+
+    return tls, buf
+
+
+def wait_for_reconnect(host: str, auth_token: str, expected_fingerprint: str, max_wait: float = 60):
+    """
+    RELOAD tears down and rebuilds both STA and AP, which kills whatever
+    TCP session sent the command if it arrived over the AP. Poll for a
+    fresh connection to succeed rather than treating that as a fatal error.
+    """
+    print("Connection dropped (expected for RELOAD) -- waiting for AP to come back", end="", flush=True)
+    start = time.monotonic()
+    while time.monotonic() - start < max_wait:
+        try:
+            tls, buf = connect_and_verify(host, auth_token, expected_fingerprint)
+            print("\nReconnected.")
+            return tls, buf
+        except (OSError, ssl.SSLError, RuntimeError):
+            print(".", end="", flush=True)
+            time.sleep(2)
+    raise RuntimeError("Timed out waiting for the AP to come back after RELOAD")
+
+
+def main():
+    env = load_env(PROJECT_ROOT / ".env")
+    host = require(env, "ESP_HOST")
+    auth_token = require(env, "AUTH_TOKEN")
+    expected_fingerprint = load_fingerprint()
+
+    tls, buf = connect_and_verify(host, auth_token, expected_fingerprint)
+    print("Device identity verified.")
+    print("AUTH_OK")
 
     while True:
         cmd = input("> ").strip()
         if not cmd:
             continue
-        tls.sendall((cmd + "\n").encode())
-        print(recv_line(tls, buf))
+
+        try:
+            tls.sendall((cmd + "\n").encode())
+            print(read_response(tls, buf))
+        except (OSError, ssl.SSLError) as e:
+            if cmd == "RELOAD":
+                tls, buf = wait_for_reconnect(host, auth_token, expected_fingerprint)
+            else:
+                print(f"!! Connection lost: {e}")
+                tls.close()
+                sys.exit(1)
+
         if cmd == "QUIT":
             break
 
@@ -117,3 +171,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
